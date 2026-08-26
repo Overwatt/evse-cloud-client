@@ -1,7 +1,7 @@
 {
-  "name": "openevse-cloud-client",
+  "name": "evse-cloud-client",
   "version": "0.1.0",
-  "description": "Client for the OpenEVSE cloud relay protocol — push registration, away-from-home charger status, charging history, and Live Activity tokens. Works with any server implementing PROTOCOL.md.",
+  "description": "Client for the EVSE cloud relay protocol \u2014 phone registration and pairing, away-from-home charger status, charging history, and Live Activity tokens. Works with any server implementing PROTOCOL.md.",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

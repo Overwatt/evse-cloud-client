@@ -1,6 +1,6 @@
-# OpenEVSE cloud relay protocol
+# EVSE cloud relay protocol
 
-A small HTTPS API that gives an OpenEVSE phone app cloud superpowers: push
+A small HTTPS API that gives an EV-charger phone app cloud superpowers: push
 notifications from anywhere, away-from-home charger status, charging history,
 and iOS Live Activities. Any server can implement it; this package is the
 client. The reference server implementation (AWS CDK: IoT Core MQTT ingest →
@@ -67,7 +67,7 @@ Charger states as the server's ingest pipeline last saw them.
 }] }
 ```
 
-`state` uses the OpenEVSE RAPI codes: 1 ready, 2 connected, 3 charging,
+`state` uses the OpenEVSE-style RAPI codes (the reference hardware): 1 ready, 2 connected, 3 charging,
 4–11 faults, 254 sleeping, 255 disabled.
 
 ## GET /sessions?charger=<name>&limit=<n>

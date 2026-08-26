@@ -1,4 +1,4 @@
-// Client for the OpenEVSE cloud relay protocol (see PROTOCOL.md).
+// Client for the EVSE cloud relay protocol (see PROTOCOL.md).
 //
 // Vendor-neutral by construction: the host app supplies the server URL and
 // bearer token via configure() — nothing here names any particular operator.
