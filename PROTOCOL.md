@@ -17,7 +17,9 @@ the agent is an upgrade, never a requirement.
 All endpoints require `Authorization: Bearer <token>` — a server-issued
 registration token identifying the household (stage-1 auth; servers may layer
 stronger schemes). Data endpoints additionally require per-device proof (see
-*Device pairing*).
+*Device pairing*). Servers that have accounts accept a signed-in user's ID
+token in the same header instead; the per-device headers are then not sent,
+and the claim and invite endpoints below accept nothing else.
 
 ## POST /register
 
@@ -108,6 +110,57 @@ the phone's push-to-start token (iOS 17.2+) with a label snapshot, and
 
 the update token for one live activity. `expoToken` links the device so
 servers can skip banner notifications that duplicate a live card.
+
+## POST /claim
+
+Binds a charger to the caller's household and provisions it. Requires a
+signed-in caller: servers answer `403 {"error":"sign in to claim"}` to a
+registration-token caller.
+
+```json
+{ "name": "openevse-2760", "serial": "optional", "label": "Garage",
+  "tenantId": "optional — another household the caller administers" }
+```
+
+`name` is the charger's hostname, which is also its MQTT client id
+(`^[a-z0-9][a-z0-9-]{0,39}$`). Response:
+
+```json
+{ "name": "openevse-2760", "tenant": "01j...",
+  "certificatePem": "...", "privateKey": "...", "rootCa": "...",
+  "config": { "mqtt_server": "...", "mqtt_port": 8883, "...": "..." } }
+```
+
+The private key is returned exactly once and is never retrievable again; the
+client hands it to the charger over the LAN and does not store it. `config` is
+the payload for the charger's own `/config` endpoint.
+
+A name already held by another household may be claimed only while it is
+offline there — `409 {"error":"claimed elsewhere"}` otherwise; that household
+is notified when it succeeds. Servers MAY cap chargers per household
+(`409 {"error":"charger limit"}`). A household the caller cannot administer is
+`404 {"error":"no such tenant"}`, never 403.
+
+## DELETE /chargers/{name}
+
+Gives the charger up: the server revokes its certificate, so it stops
+publishing within the keepalive. Charging history stays with the household.
+`200 {"ok": true}`; `404 {"error":"no such charger"}` for a name the caller
+cannot see. The name becomes claimable again by anyone.
+
+## POST /invite
+
+Mints a single-use code letting one more person join the caller's household.
+`200 { "code": "ABCD2345", "expiresAt": <epoch ms> }`. Servers MAY make this a
+paid feature: `402 {"error":"household sharing needs the paid plan"}`.
+
+## POST /invite/redeem
+
+Body `{ "code": "ABCD2345" }` — matched case-insensitively. Joins the caller to
+the code's household and consumes the code. `200 { "joined": "<household>",
+"home": "<household the caller's reads now come from>" }`. Redeeming is never
+paywalled: the inviter paid. Invalid or expired codes are
+`404 {"error":"no such invite"}`.
 
 ## POST /command (reserved)
 

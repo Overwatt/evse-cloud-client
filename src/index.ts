@@ -495,3 +495,120 @@ export async function registerStartToken(
     expoToken: pushToken ?? undefined,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Claim, unclaim and invites
+//
+// These four THROW, unlike everything above. The rest of this package degrades
+// to null/false because a missed glance is a cosmetic failure; a claim is not.
+// The server issued a certificate, or it did not, and the app has to know
+// which — and has to be able to tell "no such tenant" from "charger limit"
+// from "the network is down", because it says different things to the person.
+
+export class CloudError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly error: string,
+  ) {
+    super(`${status} ${error}`);
+    this.name = 'CloudError';
+  }
+}
+
+/** Certificate issuing is not instant; 8 s is tight for it. */
+const CLAIM_TIMEOUT_MS = 15_000;
+
+async function request<T>(
+  method: 'POST' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  if (!config.baseUrl) {
+    throw new CloudError(0, 'not configured');
+  }
+  const auth = await authHeaders();
+  if (!auth) {
+    throw new CloudError(0, 'not configured');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLAIM_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${base()}${path}`, {
+      method,
+      signal: controller.signal,
+      headers: body === undefined
+        ? auth
+        : { ...auth, 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch {
+    throw new CloudError(0, 'network');
+  } finally {
+    clearTimeout(timer);
+  }
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = null;
+  }
+  if (!res.ok) {
+    const named = (parsed as { error?: unknown } | null)?.error;
+    throw new CloudError(res.status, typeof named === 'string' ? named : 'request failed');
+  }
+  return parsed as T;
+}
+
+export interface ClaimedCharger {
+  name: string;
+  tenant: string;
+  certificatePem: string;
+  /** Returned exactly once, by the server, and never again. Hand it straight
+   *  to the charger; do not persist it. */
+  privateKey: string;
+  rootCa: string;
+  /** The payload to POST to the charger's own `/config`. */
+  config: Record<string, string | number | boolean>;
+}
+
+/**
+ * Claim a charger for the signed-in user's household.
+ *
+ * The name is the charger's hostname, which is also its MQTT client id. The
+ * response carries credentials the app uploads to the charger over the LAN.
+ */
+export async function claimCharger(
+  name: string,
+  opts: { serial?: string; label?: string; tenantId?: string } = {},
+): Promise<ClaimedCharger> {
+  return request<ClaimedCharger>('POST', '/claim', {
+    name,
+    ...(opts.serial ? { serial: opts.serial } : {}),
+    ...(opts.label ? { label: opts.label } : {}),
+    ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
+  });
+}
+
+/** Give a charger up: its certificate is revoked, so it stops publishing.
+ *  Charging history stays with the household that ran it. */
+export async function unclaimCharger(name: string): Promise<void> {
+  await request<{ ok: boolean }>(
+    'DELETE',
+    `/chargers/${encodeURIComponent(name)}`,
+  );
+}
+
+/** Mint a single-use code that lets one more person join the household. */
+export async function createInvite(): Promise<{ code: string; expiresAt: number }> {
+  return request<{ code: string; expiresAt: number }>('POST', '/invite', {});
+}
+
+/** Redeem an invite code. `home` is where the caller's phone endpoints will
+ *  read from afterwards — the server moves it when their own household is
+ *  empty, which is the usual case for a partner who just signed up. */
+export async function redeemInvite(
+  code: string,
+): Promise<{ joined: string; home: string }> {
+  return request<{ joined: string; home: string }>('POST', '/invite/redeem', { code });
+}

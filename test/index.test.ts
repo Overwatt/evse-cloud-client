@@ -4,13 +4,18 @@
 // sending the device headers alongside a JWT — is how a caller ends up
 // authenticated as the wrong thing.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CloudError,
+  claimCharger,
   cloudConfigured,
   cloudGet,
   cloudPost,
   configureCloud,
+  createInvite,
+  redeemInvite,
   registerCloudDevice,
+  unclaimCharger,
 } from '../src/index';
 
 const store = new Map<string, string>();
@@ -42,6 +47,10 @@ beforeEach(() => {
     return Promise.resolve(respond(200, { chargers: [] }));
   });
   configureCloud({});
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('cloudConfigured', () => {
@@ -154,5 +163,140 @@ describe('when there is no signed-in user', () => {
     expect(await cloudGet('/status')).toBeNull();
     expect(await cloudPost('/activity', {})).toBe(false);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('claiming a charger', () => {
+  beforeEach(() => {
+    configureCloud({
+      baseUrl: 'https://api.example.com',
+      getAuthToken: () => Promise.resolve('jwt-value'),
+    });
+  });
+
+  const claimed = {
+    name: 'openevse-2760',
+    tenant: '01j9c4wq',
+    certificatePem: 'PEM',
+    privateKey: 'KEY',
+    rootCa: 'ROOT',
+    config: { mqtt_server: 'mqtt.overwatt.app', mqtt_port: 8883 },
+  };
+
+  it('posts the name and returns the credentials', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, claimed));
+    });
+    const out = await claimCharger('openevse-2760', { serial: 'SN-1', label: 'Garage' });
+    expect(out).toEqual(claimed);
+    expect(calls[0].url).toBe('https://api.example.com/claim');
+    expect(calls[0].init.method).toBe('POST');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      name: 'openevse-2760',
+      serial: 'SN-1',
+      label: 'Garage',
+    });
+    expect(headers()).toEqual({
+      Authorization: 'Bearer jwt-value',
+      'Content-Type': 'application/json',
+    });
+  });
+
+  it('sends only the name when there is nothing else to say', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, claimed));
+    });
+    await claimCharger('openevse-2760');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ name: 'openevse-2760' });
+  });
+
+  it('throws the server refusal, status and all', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve(respond(409, { error: 'claimed elsewhere' })));
+    await expect(claimCharger('openevse-2760')).rejects.toMatchObject({
+      name: 'CloudError',
+      status: 409,
+      error: 'claimed elsewhere',
+    });
+  });
+
+  it('throws with the status even when the body is not JSON', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve({
+        ok: false,
+        status: 502,
+        json: () => Promise.reject(new Error('not json')),
+      }),
+    );
+    await expect(claimCharger('openevse-2760')).rejects.toMatchObject({
+      status: 502,
+      error: 'request failed',
+    });
+  });
+
+  it('throws rather than silently doing nothing when unconfigured', async () => {
+    configureCloud({});
+    await expect(claimCharger('openevse-2760')).rejects.toBeInstanceOf(CloudError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('unclaims by name, with no body', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, { ok: true }));
+    });
+    await expect(unclaimCharger('openevse-2760')).resolves.toBeUndefined();
+    expect(calls[0].url).toBe('https://api.example.com/chargers/openevse-2760');
+    expect(calls[0].init.method).toBe('DELETE');
+    expect(calls[0].init.body).toBeUndefined();
+    expect(headers()).toEqual({ Authorization: 'Bearer jwt-value' });
+  });
+
+  it('throws when the charger is not the caller to give away', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve(respond(404, { error: 'no such charger' })));
+    await expect(unclaimCharger('openevse-2760')).rejects.toMatchObject({
+      status: 404,
+      error: 'no such charger',
+    });
+  });
+});
+
+describe('invites', () => {
+  beforeEach(() => {
+    configureCloud({
+      baseUrl: 'https://api.example.com',
+      getAuthToken: () => Promise.resolve('jwt-value'),
+    });
+  });
+
+  it('mints a code', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, { code: 'ABCD2345', expiresAt: 1787700000000 }));
+    });
+    expect(await createInvite()).toEqual({ code: 'ABCD2345', expiresAt: 1787700000000 });
+    expect(calls[0].url).toBe('https://api.example.com/invite');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({});
+  });
+
+  it('surfaces the paywall as a CloudError the app can read', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(respond(402, { error: 'household sharing needs the paid plan' })),
+    );
+    await expect(createInvite()).rejects.toMatchObject({
+      status: 402,
+      error: 'household sharing needs the paid plan',
+    });
+  });
+
+  it('redeems a code and says where the caller ended up', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, { joined: 'inviter', home: 'inviter' }));
+    });
+    expect(await redeemInvite('abcd2345')).toEqual({ joined: 'inviter', home: 'inviter' });
+    expect(calls[0].url).toBe('https://api.example.com/invite/redeem');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ code: 'abcd2345' });
   });
 });
