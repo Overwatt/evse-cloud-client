@@ -26,6 +26,13 @@ export interface CloudConfig {
   storage?: KeyValueStorage;
   /** This phone's push token (identifies the device to the server). */
   getPushToken?: () => Promise<string | null>;
+  /**
+   * The signed-in user's ID token, if there is one. When this returns a token
+   * it is what authenticates the request — the flat token and the per-device
+   * headers are not sent, because the identity is stronger proof than either.
+   * Returning null (signed out, refresh failed) falls back to the flat token.
+   */
+  getAuthToken?: () => Promise<string | null>;
 }
 
 let config: CloudConfig = {};
@@ -36,7 +43,7 @@ export function configureCloud(next: CloudConfig): void {
 
 /** Whether a server was configured at all. */
 export function cloudConfigured(): boolean {
-  return !!(config.baseUrl && config.token);
+  return !!(config.baseUrl && (config.token || config.getAuthToken));
 }
 
 const memoryStore = new Map<string, string>();
@@ -88,23 +95,58 @@ async function deviceHeaders(): Promise<Record<string, string>> {
     : {};
 }
 
+function base(): string {
+  return (config.baseUrl ?? '').replace(/\/$/, '');
+}
+
+/**
+ * What authenticates one request, or null when nothing does.
+ *
+ * `withDevice` is false for registration: the per-device secret is what
+ * registration RETURNS, so presenting it there would be circular, and the
+ * server does not look for it on that route.
+ */
+async function authHeaders(
+  withDevice = true,
+): Promise<Record<string, string> | null> {
+  if (config.getAuthToken) {
+    let jwt: string | null = null;
+    try {
+      jwt = await config.getAuthToken();
+    } catch {
+      jwt = null;
+    }
+    if (jwt) {
+      return { Authorization: `Bearer ${jwt}` };
+    }
+  }
+  if (config.token) {
+    return {
+      Authorization: `Bearer ${config.token}`,
+      ...(withDevice ? await deviceHeaders() : {}),
+    };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Transport
 
 /** Authenticated GET; null on any failure — callers degrade, never throw. */
 export async function cloudGet<T>(path: string, timeoutMs = 8000): Promise<T | null> {
-  if (!config.baseUrl || !config.token) {
+  if (!config.baseUrl) {
+    return null;
+  }
+  const auth = await authHeaders();
+  if (!auth) {
     return null;
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
+    const res = await fetch(`${base()}${path}`, {
       signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${config.token}`,
-        ...(await deviceHeaders()),
-      },
+      headers: auth,
     });
     if (!res.ok) {
       return null;
@@ -123,20 +165,20 @@ export async function cloudPost(
   body: unknown,
   timeoutMs = 8000,
 ): Promise<boolean> {
-  if (!config.baseUrl || !config.token) {
+  if (!config.baseUrl) {
+    return false;
+  }
+  const auth = await authHeaders();
+  if (!auth) {
     return false;
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${config.baseUrl.replace(/\/$/, '')}${path}`, {
+    const res = await fetch(`${base()}${path}`, {
       method: 'POST',
       signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${config.token}`,
-        'Content-Type': 'application/json',
-        ...(await deviceHeaders()),
-      },
+      headers: { ...auth, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     return res.ok;
@@ -166,18 +208,22 @@ export async function registerCloudDevice(body: {
   devices: { name: string; nickname?: string }[];
   prefs?: Record<string, boolean>;
 }): Promise<RegisterResult> {
-  if (!config.baseUrl || !config.token) {
+  if (!config.baseUrl) {
+    return { ok: false };
+  }
+  const auth = await authHeaders(false);
+  if (!auth) {
     return { ok: false };
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const res = await fetch(`${config.baseUrl.replace(/\/$/, '')}/register`, {
+    const res = await fetch(`${base()}/register`, {
       method: 'POST',
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.token}`,
+        ...auth,
       },
       body: JSON.stringify(body),
     });
