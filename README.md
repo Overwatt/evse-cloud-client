@@ -60,6 +60,12 @@ const { code, expiresAt } = await createInvite();   // paid plans only (402)
 const { joined, home } = await redeemInvite(code);  // partner joins
 ```
 
+A redeem does not show up in `getStatus()` straight away. The server caches
+who-you-are per request handler for about a minute, and redeem runs in a
+different handler from `/status`, so the joined household's chargers can take
+up to 60 s to appear. Poll after `redeemInvite` resolves — every 5 s, giving
+up at 60 s — rather than treating the first empty list as the answer.
+
 `CloudError.error` is the server's own word for the refusal — `charger limit`,
 `claimed elsewhere`, `no such tenant`, `no such invite`,
 `household sharing needs the paid plan` — so the app can say something true

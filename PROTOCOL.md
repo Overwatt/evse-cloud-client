@@ -162,6 +162,14 @@ the code's household and consumes the code. `200 { "joined": "<household>",
 paywalled: the inviter paid. Invalid or expired codes are
 `404 {"error":"no such invite"}`.
 
+**Reads lag a redeem by up to a minute.** A server is expected to cache the
+caller's identity per handler — the reference server does, for 60 s — and
+`/invite/redeem` runs in a different handler from `/status`, so evicting the
+cache there does not evict the one that answers the next read. After a
+successful redeem, `GET /status` MAY not yet list the joined household's
+chargers. Clients SHOULD poll every 5 s for up to 60 s rather than treating
+the first response as final.
+
 ## POST /command (reserved)
 
 Remote charger control. Shape not yet frozen; servers may 404 it.
