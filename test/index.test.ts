@@ -241,6 +241,38 @@ describe('claiming a charger', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('sends no per-device headers even on the flat-token path', async () => {
+    configureCloud({
+      baseUrl: 'https://api.example.com',
+      token: 'flat',
+      storage,
+      getPushToken: () => Promise.resolve('ExponentPushToken[abc]'),
+    });
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, claimed));
+    });
+    await claimCharger('openevse-2760');
+    expect(headers()).toEqual({
+      Authorization: 'Bearer flat',
+      'Content-Type': 'application/json',
+    });
+  });
+
+  it('throws bad response for a 200 whose body is not a usable object', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new Error('not json')),
+      }),
+    );
+    await expect(claimCharger('openevse-2760')).rejects.toMatchObject({
+      status: 200,
+      error: 'bad response',
+    });
+  });
+
   it('unclaims by name, with no body', async () => {
     vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
       calls.push({ url, init });
@@ -251,6 +283,17 @@ describe('claiming a charger', () => {
     expect(calls[0].init.method).toBe('DELETE');
     expect(calls[0].init.body).toBeUndefined();
     expect(headers()).toEqual({ Authorization: 'Bearer jwt-value' });
+  });
+
+  it('tolerates an empty 200 body on unclaim', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new Error('no body')),
+      }),
+    );
+    await expect(unclaimCharger('openevse-2760')).resolves.toBeUndefined();
   });
 
   it('throws when the charger is not the caller to give away', async () => {

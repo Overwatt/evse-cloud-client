@@ -522,11 +522,15 @@ async function request<T>(
   method: 'POST' | 'DELETE',
   path: string,
   body?: unknown,
+  opts: { allowEmptyOk?: boolean } = {},
 ): Promise<T> {
   if (!config.baseUrl) {
     throw new CloudError(0, 'not configured');
   }
-  const auth = await authHeaders();
+  // No per-device headers here: these are user-identified calls (a JWT, or
+  // the flat token alone), never a paired-device data read, and the server
+  // does not look for X-Device-* on them.
+  const auth = await authHeaders(false);
   if (!auth) {
     throw new CloudError(0, 'not configured');
   }
@@ -556,6 +560,9 @@ async function request<T>(
   if (!res.ok) {
     const named = (parsed as { error?: unknown } | null)?.error;
     throw new CloudError(res.status, typeof named === 'string' ? named : 'request failed');
+  }
+  if (!opts.allowEmptyOk && (parsed === null || typeof parsed !== 'object')) {
+    throw new CloudError(res.status, 'bad response');
   }
   return parsed as T;
 }
@@ -596,6 +603,8 @@ export async function unclaimCharger(name: string): Promise<void> {
   await request<{ ok: boolean }>(
     'DELETE',
     `/chargers/${encodeURIComponent(name)}`,
+    undefined,
+    { allowEmptyOk: true },
   );
 }
 
