@@ -66,6 +66,7 @@ Charger states as the server's ingest pipeline last saw them.
 ```json
 { "chargers": [{
   "name": "openevse-2760",
+  "label": "Garage",
   "state": 3,
   "vehicle": 1,
   "sessionWh": 5230,
@@ -78,6 +79,12 @@ Charger states as the server's ingest pipeline last saw them.
 
 `state` uses the OpenEVSE-style RAPI codes (the reference hardware): 1 ready, 2 connected, 3 charging,
 4–11 faults, 254 sleeping, 255 disabled.
+
+`label` is the operator's display name for the charger, set at claim time
+(`POST /claim`'s optional `label`). It is `null` — or absent, on an older
+server — when the charger was claimed without one. Servers MUST NOT
+substitute `name`, which is the MQTT client id: what to show when there is
+no label is the client's decision.
 
 ## GET /sessions?charger=<name>&limit=<n>
 
