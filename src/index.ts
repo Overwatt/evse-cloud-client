@@ -257,13 +257,78 @@ export interface ChargerGlance {
   text: string;
 }
 
+/** The charger's current manual override, mirrored from its retained
+ *  `override` document; `null` = no override (automatic). */
+export interface ChargerOverride {
+  state: 'active' | 'disabled' | null;
+  chargeCurrent?: number;
+  autoRelease?: boolean;
+}
+
+/** A stop-after-this-much limit on the current run; `null` = none set. */
+export interface ChargerLimit {
+  type: 'energy' | 'time' | 'soc' | 'range';
+  value: number;
+  autoRelease: boolean;
+}
+
+/** One entry of the charger's weekly schedule. */
+export interface ScheduleEvent {
+  id: number;
+  state: 'active' | 'disabled';
+  time: string;
+  days: string[];
+}
+
+/** The charger's mirrored configuration; each field only when known. */
+export interface ChargerCfg {
+  maxCurrentSoft?: number;
+  minCurrentHard?: number;
+  maxCurrentHard?: number;
+  divertEnabled?: boolean;
+  chargeMode?: string;
+  shaperEnabled?: boolean;
+  version?: string;
+  firmware?: string;
+  hostname?: string;
+  timeZone?: string;
+  pauseUsesDisabled?: boolean;
+}
+
 export interface CloudCharger {
   name?: string;
+  label?: string | null;
   state?: number | null;
+  vehicle?: number | null;
   sessionWh?: number | null;
   chargingStartedAt?: number | null;
   online?: boolean | null;
+  offlineAt?: number | null;
   updatedAt?: number | null;
+  /** Live telemetry, each `null`/absent when the mirror has not seen it yet. */
+  amps?: number | null;
+  volts?: number | null;
+  watts?: number | null;
+  pilotA?: number | null;
+  tempC?: number | null;
+  rssi?: number | null;
+  fw?: string | null;
+  ip?: string | null;
+  uptimeS?: number | null;
+  agent?: string | null;
+  override?: ChargerOverride | null;
+  limit?: ChargerLimit | null;
+  schedule?: ScheduleEvent[] | null;
+  cfg?: ChargerCfg | null;
+  /** When the control mirror (override/limit/schedule/cfg) last changed. */
+  controlAt?: number | null;
+}
+
+/** `GET /status`'s full response: the tenant's plan gates remote control,
+ *  `chargers` is the array `/status` has always returned. */
+export interface StatusResponse {
+  plan?: 'free' | 'paid';
+  chargers?: CloudCharger[];
 }
 
 /** Minimal shape of a charger entry as the host app models it. */
@@ -519,7 +584,7 @@ export class CloudError extends Error {
 const CLAIM_TIMEOUT_MS = 15_000;
 
 async function request<T>(
-  method: 'POST' | 'DELETE',
+  method: 'POST' | 'DELETE' | 'PATCH',
   path: string,
   body?: unknown,
   opts: { allowEmptyOk?: boolean } = {},
@@ -620,4 +685,56 @@ export async function redeemInvite(
   code: string,
 ): Promise<{ joined: string; home: string }> {
   return request<{ joined: string; home: string }>('POST', '/invite/redeem', { code });
+}
+
+// ---------------------------------------------------------------------------
+// Remote control
+
+export type CommandAction =
+  | 'charge'
+  | 'pause'
+  | 'release'
+  | 'limit'
+  | 'limitClear'
+  | 'schedule'
+  | 'scheduleClear'
+  | 'divert'
+  | 'maxCurrent'
+  | 'restart';
+
+export interface CommandResult {
+  ok: true;
+  charger: string;
+  action: CommandAction;
+  value: unknown;
+}
+
+/**
+ * Remote control (paid plans). The server validates and clamps; `value` is
+ * what the action needs — amps for `charge`/`maxCurrent`, `{type, value,
+ * autoRelease?}` for `limit`, an event for `schedule`, an id for
+ * `scheduleClear`, 1|2 for `divert`, nothing for the rest. The charger
+ * confirms by republishing its control documents; read them back from
+ * getStatus()/`/status` (`override`, `limit`, `schedule`, `cfg`).
+ */
+export async function sendCommand(
+  name: string,
+  action: CommandAction,
+  value?: unknown,
+  opts: { tenantId?: string } = {},
+): Promise<CommandResult> {
+  return request<CommandResult>('POST', '/command', {
+    charger: name,
+    action,
+    ...(value === undefined ? {} : { value }),
+    ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
+  });
+}
+
+/** The household's display name for a charger; '' clears it. */
+export async function renameCharger(
+  name: string,
+  label: string,
+): Promise<{ ok: true; name: string; label: string | null }> {
+  return request('PATCH', `/chargers/${encodeURIComponent(name)}`, { label });
 }

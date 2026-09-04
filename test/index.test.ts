@@ -15,6 +15,8 @@ import {
   createInvite,
   redeemInvite,
   registerCloudDevice,
+  renameCharger,
+  sendCommand,
   unclaimCharger,
 } from '../src/index';
 
@@ -341,5 +343,63 @@ describe('invites', () => {
     expect(await redeemInvite('abcd2345')).toEqual({ joined: 'inviter', home: 'inviter' });
     expect(calls[0].url).toBe('https://api.example.com/invite/redeem');
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ code: 'abcd2345' });
+  });
+});
+
+describe('sendCommand', () => {
+  beforeEach(() => {
+    configureCloud({
+      baseUrl: 'https://api.example.com',
+      getAuthToken: () => Promise.resolve('jwt-value'),
+    });
+  });
+
+  it('POSTs /command with the ID token and returns the body', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, { ok: true, charger: 'g', action: 'charge', value: 32 }));
+    });
+    const r = await sendCommand('g', 'charge', 32);
+    expect(r).toEqual({ ok: true, charger: 'g', action: 'charge', value: 32 });
+    expect(calls[0].url).toBe('https://api.example.com/command');
+    expect(calls[0].init.method).toBe('POST');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ charger: 'g', action: 'charge', value: 32 });
+    expect(headers().Authorization).toBe('Bearer jwt-value');
+    expect(headers()['X-Device-Token']).toBeUndefined();
+  });
+
+  it('omits value when undefined and passes tenantId through', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, { ok: true, charger: 'g', action: 'pause', value: null }));
+    });
+    await sendCommand('g', 'pause', undefined, { tenantId: 't2' });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ charger: 'g', action: 'pause', tenantId: 't2' });
+  });
+
+  it('throws CloudError with the server word', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve(respond(409, { error: 'charger offline' })));
+    await expect(sendCommand('g', 'pause')).rejects.toMatchObject({ status: 409, error: 'charger offline' });
+  });
+});
+
+describe('renameCharger', () => {
+  beforeEach(() => {
+    configureCloud({
+      baseUrl: 'https://api.example.com',
+      getAuthToken: () => Promise.resolve('jwt-value'),
+    });
+  });
+
+  it('PATCHes /chargers/{name}', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, { ok: true, name: 'g 1', label: 'Garage' }));
+    });
+    const r = await renameCharger('g 1', 'Garage');
+    expect(r.label).toBe('Garage');
+    expect(calls[0].url).toBe('https://api.example.com/chargers/g%201');
+    expect(calls[0].init.method).toBe('PATCH');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ label: 'Garage' });
   });
 });
