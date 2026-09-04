@@ -401,5 +401,7 @@ describe('renameCharger', () => {
     expect(calls[0].url).toBe('https://api.example.com/chargers/g%201');
     expect(calls[0].init.method).toBe('PATCH');
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ label: 'Garage' });
+    expect(headers().Authorization).toBe('Bearer jwt-value');
+    expect(headers()['X-Device-Token']).toBeUndefined();
   });
 });

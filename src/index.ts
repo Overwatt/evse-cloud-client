@@ -315,7 +315,7 @@ export interface CloudCharger {
   fw?: string | null;
   ip?: string | null;
   uptimeS?: number | null;
-  agent?: string | null;
+  agent?: boolean | null;
   override?: ChargerOverride | null;
   limit?: ChargerLimit | null;
   schedule?: ScheduleEvent[] | null;

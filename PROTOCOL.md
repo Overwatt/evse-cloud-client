@@ -85,7 +85,7 @@ Charger states as the server's ingest pipeline last saw them.
     "fw": "5.1.2",
     "ip": "10.75.1.157",
     "uptimeS": 86400,
-    "agent": "0.1.0",
+    "agent": false,
     "override": { "state": "active", "chargeCurrent": 32, "autoRelease": true },
     "limit": null,
     "schedule": [ { "id": 1, "state": "active", "time": "06:00:00", "days": ["monday"] } ],
@@ -114,7 +114,8 @@ what to show when there is no label is the client's decision.
 - `fw` — the charger's firmware version.
 - `ip` — the charger's LAN address.
 - `uptimeS` — seconds since the charger last booted.
-- `agent` — the evse-cloud-agent firmware component's version, when present.
+- `agent` — whether the charger runs the evse-cloud-agent firmware
+  component; its version is not exposed here.
 - `override` — the current manual override mirrored from the charger's
   retained `override` document (`state: "active"|"disabled"|null`,
   `chargeCurrent`, `autoRelease`); `null` = automatic, none set.
@@ -130,10 +131,14 @@ what to show when there is no label is the client's decision.
   `limit`, `schedule`, `cfg`; use it to tell whether a just-sent command has
   been confirmed yet.
 
-All of the above are `null` (or absent) until the charger's own retained
-documents have been mirrored at least once; a fresh deploy or a charger that
-has never republished shows them as unknown, never as a default. Existing
-fields are unchanged, and older clients ignore what they do not know.
+`override`, `limit`, `schedule`, `cfg` and `controlAt` are `null` (or absent)
+until the charger's own retained control documents have been mirrored at
+least once; a fresh deploy or a charger that has never republished shows them
+as unknown, never as a default. `plan` is always `"free"` or `"paid"`, never
+null, and the telemetry fields (`amps`/`volts`/`watts`/`pilotA`/`tempC`/
+`rssi`/`fw`/`ip`/`uptimeS`) come from the separate telemetry ingest and are
+populated independently of the control mirror. Existing fields are
+unchanged, and older clients ignore what they do not know.
 
 ## GET /sessions?charger=<name>&limit=<n>
 
@@ -206,13 +211,14 @@ cannot see. The name becomes claimable again by anyone.
 
 ## PATCH /chargers/{name}
 
-Renames a charger. Body `{ "label": "Garage" }`, at most 40 characters; an
-empty string clears it. Same authorization as `POST /claim` (the caller must
-be at home in the charger's tenant, or hold `user`+ over it) and the same
-`404 {"error":"no such charger"}` anti-enumeration for a name the caller
-cannot see or administer — never `403`, so a guess can't be told apart from a
-real charger belonging to someone else. `200 { "ok": true, "name":
-"openevse-2760", "label": "Garage" | null }`.
+Renames a charger. Body `{ "label": "Garage" }`, at most 40 characters
+(`400 {"error":"bad label"}` otherwise); an empty string clears it. The route
+takes no `tenantId` — the charger must be in the caller's home tenant;
+anything else is `404 {"error":"no such charger"}`, the same
+anti-enumeration answer as `POST /claim` for a name the caller cannot see —
+never `403`, so a guess can't be told apart from a real charger belonging to
+someone else. `200 { "ok": true, "name": "openevse-2760", "label": "Garage"
+| null }`.
 
 ## POST /invite
 
@@ -276,6 +282,7 @@ Other refusals:
 
 | status | error | meaning |
 | --- | --- | --- |
+| `400` | `bad JSON` | the request body did not parse as JSON |
 | `400` | `bad action` | not one of the actions above |
 | `400` | `bad value` | `value` doesn't fit the action's shape |
 | `403` | `sign in to control chargers` | caller presented the flat bundle token, not a signed-in identity |
@@ -385,6 +392,9 @@ survive server downtime and carry exact boundaries.
 Servers SHOULD dedupe on `start_ts`.
 
 ## agent/cmd and agent/ack — acknowledged commands
+
+Reserved. `POST /command` publishes to the legacy command topics listed
+under *Legacy device compatibility*, not to `agent/cmd`.
 
 Cloud publishes to `agent/cmd`:
 
