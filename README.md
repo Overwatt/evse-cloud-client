@@ -75,4 +75,22 @@ up at 60 s — rather than treating the first empty list as the answer.
 `household sharing needs the paid plan` — so the app can say something true
 rather than "something went wrong".
 
+## Remote control
+
+Paid plans only. `sendCommand` and `renameCharger` also throw `CloudError`.
+
+```ts
+await sendCommand('openevse-2760', 'charge', 32);
+await sendCommand('openevse-2760', 'pause');
+await sendCommand('openevse-2760', 'release');
+await sendCommand('openevse-2760', 'limit', { type: 'energy', value: 10000 });
+await renameCharger('openevse-2760', 'Garage');
+```
+
+A free-plan tenant gets `402 { error: 'remote control needs the paid plan' }`.
+An offline charger gets `409 { error: 'charger offline' }` — the command never
+reached it. Either way, the request only confirms the command was published;
+watch `getStatus()`'s `override`/`limit`/`schedule`/`cfg` fields to see the
+charger actually apply it.
+
 A reference server (AWS CDK, self-hostable) lives in the Overwatt repository.

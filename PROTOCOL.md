@@ -64,27 +64,76 @@ degrade to LAN-only behavior.
 Charger states as the server's ingest pipeline last saw them.
 
 ```json
-{ "chargers": [{
-  "name": "openevse-2760",
-  "label": "Garage",
-  "state": 3,
-  "vehicle": 1,
-  "sessionWh": 5230,
-  "chargingStartedAt": 1787700000000,
-  "online": true,
-  "offlineAt": null,
-  "updatedAt": 1787700030000
-}] }
+{
+  "plan": "paid",
+  "chargers": [{
+    "name": "openevse-2760",
+    "label": "Garage",
+    "state": 3,
+    "vehicle": 1,
+    "sessionWh": 5230,
+    "chargingStartedAt": 1787700000000,
+    "online": true,
+    "offlineAt": null,
+    "updatedAt": 1787700030000,
+    "amps": 24.1,
+    "volts": 242.0,
+    "watts": 5834,
+    "pilotA": 32,
+    "tempC": 41.2,
+    "rssi": -61,
+    "fw": "5.1.2",
+    "ip": "10.75.1.157",
+    "uptimeS": 86400,
+    "agent": "0.1.0",
+    "override": { "state": "active", "chargeCurrent": 32, "autoRelease": true },
+    "limit": null,
+    "schedule": [ { "id": 1, "state": "active", "time": "06:00:00", "days": ["monday"] } ],
+    "cfg": { "maxCurrentSoft": 32, "minCurrentHard": 6, "maxCurrentHard": 48, "divertEnabled": false },
+    "controlAt": 1787700025000
+  }]
+}
 ```
 
 `state` uses the OpenEVSE-style RAPI codes (the reference hardware): 1 ready, 2 connected, 3 charging,
 4–11 faults, 254 sleeping, 255 disabled.
 
 `label` is the operator's display name for the charger, set at claim time
-(`POST /claim`'s optional `label`). It is `null` — or absent, on an older
-server — when the charger was claimed without one. Servers MUST NOT
-substitute `name`, which is the MQTT client id: what to show when there is
-no label is the client's decision.
+(`POST /claim`'s optional `label`, or `PATCH /chargers/{name}` afterwards). It
+is `null` — or absent, on an older server — when the charger was claimed
+without one. Servers MUST NOT substitute `name`, which is the MQTT client id:
+what to show when there is no label is the client's decision.
+
+- `plan` — the caller's tenant plan, `"free"` or `"paid"`. Gates `POST
+  /command`, below.
+- `amps` / `volts` / `watts` — instantaneous power telemetry.
+- `pilotA` — the pilot signal's advertised current limit, distinct from
+  `amps` (what is actually flowing).
+- `tempC` — the charger's internal temperature.
+- `rssi` — Wi-Fi signal strength, dBm.
+- `fw` — the charger's firmware version.
+- `ip` — the charger's LAN address.
+- `uptimeS` — seconds since the charger last booted.
+- `agent` — the evse-cloud-agent firmware component's version, when present.
+- `override` — the current manual override mirrored from the charger's
+  retained `override` document (`state: "active"|"disabled"|null`,
+  `chargeCurrent`, `autoRelease`); `null` = automatic, none set.
+- `limit` — the stop-after-this-much limit on the current run
+  (`{type, value, autoRelease}`); `null` = none set.
+- `schedule` — the charger's weekly schedule, an array of `{id, state, time,
+  days}`; `null` while the mirror hasn't seen one.
+- `cfg` — the charger's mirrored configuration (`maxCurrentSoft`,
+  `minCurrentHard`, `maxCurrentHard`, `divertEnabled`, `chargeMode`,
+  `shaperEnabled`, `version`, `firmware`, `hostname`, `timeZone`,
+  `pauseUsesDisabled`), each field present only when known.
+- `controlAt` — epoch ms of the last mirror write to any of `override`,
+  `limit`, `schedule`, `cfg`; use it to tell whether a just-sent command has
+  been confirmed yet.
+
+All of the above are `null` (or absent) until the charger's own retained
+documents have been mirrored at least once; a fresh deploy or a charger that
+has never republished shows them as unknown, never as a default. Existing
+fields are unchanged, and older clients ignore what they do not know.
 
 ## GET /sessions?charger=<name>&limit=<n>
 
@@ -155,6 +204,16 @@ publishing within the keepalive. Charging history stays with the household.
 `200 {"ok": true}`; `404 {"error":"no such charger"}` for a name the caller
 cannot see. The name becomes claimable again by anyone.
 
+## PATCH /chargers/{name}
+
+Renames a charger. Body `{ "label": "Garage" }`, at most 40 characters; an
+empty string clears it. Same authorization as `POST /claim` (the caller must
+be at home in the charger's tenant, or hold `user`+ over it) and the same
+`404 {"error":"no such charger"}` anti-enumeration for a name the caller
+cannot see or administer — never `403`, so a guess can't be told apart from a
+real charger belonging to someone else. `200 { "ok": true, "name":
+"openevse-2760", "label": "Garage" | null }`.
+
 ## POST /invite
 
 Mints a single-use code letting one more person join the caller's household.
@@ -177,11 +236,61 @@ successful redeem, `GET /status` MAY not yet list the joined household's
 chargers. Clients SHOULD poll every 5 s for up to 60 s rather than treating
 the first response as final.
 
-## POST /command (reserved)
+## POST /command
 
-Remote charger control. Shape not yet frozen; servers may 404 it.
-When frozen, servers SHOULD deliver it to agent-equipped chargers via the
-`cmd`/`ack` topics below, gaining delivery confirmation.
+Remote charger control: start or pause charging, set a stop limit, edit the
+schedule, flip solar-divert mode, change the default max current, or restart.
+Requires a signed-in caller, same as `/claim`; the flat registration token
+gets `403 {"error":"sign in to control chargers"}`.
+
+```json
+{ "charger": "openevse-2760", "action": "charge", "value": 32,
+  "tenantId": "optional — another household the caller administers" }
+```
+
+`tenantId` defaults to the caller's home tenant, exactly as `/claim`. The
+action allowlist:
+
+| action | value | publishes |
+| --- | --- | --- |
+| `charge` | optional integer amps | `override/set` `{state:"active", charge_current: A or "clear", max_current:"clear", auto_release:true}` |
+| `pause` | — | `override/set` `{state:"disabled", charge_current:"clear", max_current:"clear", auto_release:true}` |
+| `release` | — | `override/set` `clear` |
+| `limit` | `{type:"energy"\|"time", value:int, autoRelease?:bool}` | `limit/set` `{type, value, auto_release}` (default `true`) |
+| `limitClear` | — | `limit/set` `clear` |
+| `schedule` | `{id?:int, state:"active"\|"disabled", time:"HH:MM:SS", days:string[]}` | `schedule/set` with the same object; a missing `id` is assigned server-side as `max(existing ids)+1` (or `1`) from the mirrored schedule |
+| `scheduleClear` | integer id | `schedule/clear` with the id as the payload |
+| `divert` | `1` (normal) or `2` (eco) | `divertmode/set` |
+| `maxCurrent` | integer amps | `config/set` `{max_current_soft: A}` |
+| `restart` | — | `restart` `{"device":"gateway"}` |
+
+Anything else is `400 {"error":"bad action"}` / `{"error":"bad value"}`. Amps
+are integers clamped to `[cfg.minCurrentHard ?? 6, cfg.maxCurrentHard ?? 48]`
+from the mirrored config — servers MUST clamp rather than reject an
+out-of-range value, and the response reports the value actually sent (`200 {
+"ok": true, "charger": "openevse-2760", "action": "charge", "value": 32 }`).
+`limit.value` must be a positive integer ≤ 100000 (Wh or minutes). Schedule
+`days` are lowercase English day names; `time` must match `^\d{2}:\d{2}:\d{2}$`.
+
+Other refusals:
+
+| status | error | meaning |
+| --- | --- | --- |
+| `400` | `bad action` | not one of the actions above |
+| `400` | `bad value` | `value` doesn't fit the action's shape |
+| `403` | `sign in to control chargers` | caller presented the flat bundle token, not a signed-in identity |
+| `404` | `no such charger` | the charger doesn't exist under the resolved tenant, is a tombstone, or the caller may not act on that tenant |
+| `402` | `remote control needs the paid plan` | the tenant's plan is `free` — servers MUST refuse remote control on free plans with this status and word |
+| `409` | `charger offline` | the charger's item says `online: false`; a QoS-1, non-retained publish to an absent charger is a message lost |
+| `502` | `publish failed` | the broker publish itself failed; the command never reached the charger |
+
+The response is not confirmation the charger obeyed — only that the command
+was published. The charger confirms by republishing its retained control
+documents (`override`, `limit`, `schedule`, `config`), which the server
+mirrors; read the result back from `GET /status`'s `override`, `limit`,
+`schedule` and `cfg` fields. Clients SHOULD poll `/status` every few seconds
+for up to ~20 s after a command and treat "no change yet" as pending, not
+failed.
 
 ---
 
