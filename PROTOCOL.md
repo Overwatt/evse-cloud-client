@@ -393,8 +393,10 @@ Servers SHOULD dedupe on `start_ts`.
 
 ## agent/cmd and agent/ack — acknowledged commands
 
-Reserved. `POST /command` publishes to the legacy command topics listed
-under *Legacy device compatibility*, not to `agent/cmd`.
+Reserved. `POST /command` publishes to the charger's legacy command topics
+(`override/set`, `limit/set`, `schedule/set`, `schedule/clear`,
+`divertmode/set`, `config/set`, `restart` under the base topic), never to
+`agent/cmd`.
 
 Cloud publishes to `agent/cmd`:
 
