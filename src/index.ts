@@ -302,6 +302,7 @@ export interface CloudCharger {
   vehicle?: number | null;
   sessionWh?: number | null;
   chargingStartedAt?: number | null;
+  elapsedS?: number | null;
   online?: boolean | null;
   offlineAt?: number | null;
   updatedAt?: number | null;
@@ -738,3 +739,5 @@ export async function renameCharger(
 ): Promise<{ ok: true; name: string; label: string | null }> {
   return request('PATCH', `/chargers/${encodeURIComponent(name)}`, { label });
 }
+
+export * from './live';
