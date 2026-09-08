@@ -161,7 +161,7 @@ visit boundary for grouping runs.
 
 ## POST /activity
 
-iOS Live Activity (ActivityKit) token registration. Two shapes:
+iOS Live Activity (ActivityKit) token registration. Three shapes:
 
 ```json
 { "startToken": "<hex>", "nicknames": { "openevse-2760": "Garage" },
@@ -177,6 +177,13 @@ the phone's push-to-start token (iOS 17.2+) with a label snapshot, and
 
 the update token for one live activity. `expoToken` links the device so
 servers can skip banner notifications that duplicate a live card.
+
+```json
+{ "startToken": "<hex>", "remove": true }
+```
+
+forgets the push-to-start token (the phone turned Live Activities off). The
+server answers `200 {"ok":true}` whether or not the row existed.
 
 ## POST /claim
 

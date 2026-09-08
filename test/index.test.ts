@@ -18,6 +18,7 @@ import {
   renameCharger,
   sendCommand,
   unclaimCharger,
+  unregisterStartToken,
 } from '../src/index';
 
 const store = new Map<string, string>();
@@ -403,5 +404,34 @@ describe('renameCharger', () => {
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ label: 'Garage' });
     expect(headers().Authorization).toBe('Bearer jwt-value');
     expect(headers()['X-Device-Token']).toBeUndefined();
+  });
+});
+
+describe('unregisterStartToken', () => {
+  beforeEach(() => {
+    configureCloud({
+      baseUrl: 'https://api.example.com',
+      getAuthToken: () => Promise.resolve('jwt-value'),
+    });
+  });
+
+  it('POSTs /activity with the token and remove: true', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, { ok: true }));
+    });
+    expect(await unregisterStartToken('ab'.repeat(32))).toBe(true);
+    expect(calls[0].url).toBe('https://api.example.com/activity');
+    expect(calls[0].init.method).toBe('POST');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      startToken: 'ab'.repeat(32),
+      remove: true,
+    });
+    expect(headers().Authorization).toBe('Bearer jwt-value');
+  });
+
+  it('returns false when the server rejects it', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve(respond(500, { ok: false })));
+    expect(await unregisterStartToken('ab'.repeat(32))).toBe(false);
   });
 });

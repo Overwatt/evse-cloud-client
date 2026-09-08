@@ -566,6 +566,12 @@ export async function registerStartToken(
   });
 }
 
+/** Forget this phone's push-to-start token: the person turned Live
+ *  Activities off, so no card should be started here any more. */
+export async function unregisterStartToken(startToken: string): Promise<boolean> {
+  return cloudPost('/activity', { startToken, remove: true });
+}
+
 // ---------------------------------------------------------------------------
 // Claim, unclaim and invites
 //
