@@ -43,8 +43,8 @@ Response: `{ "ok": true, "approved": true, "secret": "..." }`.
 - `secret` — a server-minted per-device credential, present only once
   approved. The client stores it and presents it on data reads.
 
-Notification kinds: `plug` (plugged/unplugged), `charge` (started/finished),
-`fault`, `presence` (charger offline/online). Missing keys mean enabled.
+Notification kinds: `started | finished | problem`. Missing keys mean
+enabled. (legacy `plug|charge|fault|presence` keys are still accepted)
 
 ## Device pairing
 
@@ -73,6 +73,7 @@ Charger states as the server's ingest pipeline last saw them.
     "vehicle": 1,
     "sessionWh": 5230,
     "chargingStartedAt": 1787700000000,
+    "elapsedS": 1234,
     "online": true,
     "offlineAt": null,
     "updatedAt": 1787700030000,
@@ -309,6 +310,32 @@ one-topic-per-key surface. Design goals, in order: **atomic state** (one
 document = one server ingest, no cross-topic races), **explicit versioning**,
 **clean presence** (no reliance on legacy announce topics), and **acknowledged
 commands**.
+
+## Live socket
+
+`wss://<live host>?token=<Cognito ID token>` (Overwatt: `wss://live.overwatt.app`).
+The server verifies the token on connect; an invalid one refuses the upgrade.
+
+Client → server, JSON objects:
+
+| Message | Meaning |
+|---|---|
+| `{"subscribe": ["openevse-2760"], "lease": true}` | Watch these chargers. `lease` (default false) asks the cloud to hold a live lease on each while this socket stays subscribed. Re-sending renews. |
+| `{"unsubscribe": ["openevse-2760"]}` | Stop watching. |
+
+Server → client:
+
+| Message | Meaning |
+|---|---|
+| `{"charger": "…", "snapshot": <charger>}` | Once per subscribed name, straight after `subscribe`. |
+| `{"charger": "…", "event": <charger>}` | Full replacement after a state, vehicle, presence or control change. |
+| `{"charger": "…", "tick": {…}}` | Merge patch (a subset of charger fields plus `updatedAt`) on telemetry. |
+| `{"error": "unknown charger", "charger": "…"}` | Name not in the caller's household. |
+
+`<charger>` is one `GET /status` element plus `elapsedS` (seconds since
+`chargingStartedAt` while state is 3, else null). Disconnecting releases every
+subscription and lease. Clients reconnect with 1 s, 2 s, 5 s, 15 s backoff and
+fall back to `GET /status` polling after 15 s without a socket.
 
 ## Transport
 
