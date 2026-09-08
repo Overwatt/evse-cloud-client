@@ -21,8 +21,8 @@ configureCloud({
 ```
 
 Then: `registerCloudDevice()`, `useCloudGlances()`, `useCloudKnownChargers()`,
-`fetchSessions()`, `registerActivityToken()` / `registerStartToken()`,
-and raw `cloudGet()` / `cloudPost()`.
+`fetchSessions()`, `registerActivityToken()` / `registerStartToken()` /
+`unregisterStartToken()`, and raw `cloudGet()` / `cloudPost()`.
 
 Each charger `/status` returns may carry a `label` — the operator's display
 name, set when the charger was claimed — alongside `name`, the MQTT client id;
