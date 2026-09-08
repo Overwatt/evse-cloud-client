@@ -154,6 +154,11 @@ Completed charging runs, newest first.
 }] }
 ```
 
+`wh` is the charger's session-energy counter at the end of the run; it
+counts from plug-in, so the runs of one visit carry a running total. A row
+may carry `"unplugged": true` meaning the car was unplugged after it: the
+visit boundary for grouping runs.
+
 ## POST /activity
 
 iOS Live Activity (ActivityKit) token registration. Two shapes:

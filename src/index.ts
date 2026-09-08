@@ -527,7 +527,11 @@ export interface CloudSession {
   charger: string;
   startedAt: number | null;
   endedAt: number;
+  /** The charger's session energy counter at the end of this run. It counts
+   *  from plug-in, so consecutive runs of one visit carry a running total. */
   wh: number | null;
+  /** The car was unplugged after this run: the visit ended here. */
+  unplugged?: boolean;
 }
 
 export async function fetchSessions(
