@@ -235,10 +235,13 @@ settings as the owner set them:
 
 ```json
 { "cloud_enabled": true, "cloud_server": "...", "cloud_port": 8883,
-  "cloud_thing": "evse-0123456789ab", "cloud_certificate_id": "..." }
+  "cloud_thing": "evse-0123456789ab" }
 ```
 
-`cloud_enabled` is a JSON boolean. The cloud connection's MQTT client id is
+`cloud_enabled` is a JSON boolean. The client adds `cloud_certificate_id`
+itself after uploading the pair: it is the id the charger's certificate
+store assigned, which only the charger knows (the same way the legacy
+recipe's `mqtt_certificate_id` is filled in). The cloud connection's MQTT client id is
 `cloud_thing`, derived by the firmware and not a config key: the device
 policy pins the connection to the thing name, so a mismatch is refused at
 connect. Servers MUST NOT write `mqtt_client_id`; on firmware that has it,
