@@ -235,12 +235,14 @@ settings as the owner set them:
 
 ```json
 { "cloud_enabled": true, "cloud_server": "...", "cloud_port": 8883,
-  "cloud_thing": "evse-0123456789ab", "cloud_certificate_id": "...",
-  "mqtt_client_id": "evse-0123456789ab" }
+  "cloud_thing": "evse-0123456789ab", "cloud_certificate_id": "..." }
 ```
 
-`cloud_enabled` is a JSON boolean. `mqtt_client_id` MUST equal `cloud_thing`:
-the device policy pins the connection to the thing name.
+`cloud_enabled` is a JSON boolean. The cloud connection's MQTT client id is
+`cloud_thing`, derived by the firmware and not a config key: the device
+policy pins the connection to the thing name, so a mismatch is refused at
+connect. Servers MUST NOT write `mqtt_client_id`; on firmware that has it,
+it names the charger's local-broker connection.
 
 A name already held by another household may be claimed only while it is
 offline there — `409 {"error":"claimed elsewhere"}` otherwise; that household
