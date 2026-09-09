@@ -385,6 +385,10 @@ fall back to `GET /status` polling after 15 s without a socket.
 - All payloads are JSON objects carrying `"v": 1`. Receivers MUST ignore
   unknown fields (additive evolution); a breaking change bumps `v`, and a
   device advertises the version it speaks in `agent/presence`.
+- The reference device agent is not thread-safe: every entry point must run
+  from one task, or be serialised by the host, or a command/lease arriving
+  on the MQTT event-handler task while another task drives the agent's loop
+  is a data race.
 
 ## agent/status — the consolidated state document
 
@@ -539,12 +543,23 @@ Cloud publishes to `agent/cmd`:
   "exp_ts": 1787700120 }
 ```
 
-- `id` — unique per command; the device remembers recent ids and re-acks
-  duplicates without re-executing (QoS 1 redelivery safety).
+- `id` — unique per command **within its first 31 characters**; only that
+  much is kept for de-duplication. The device remembers the **last 8** ids
+  seen and re-acks a duplicate without re-executing (QoS 1 redelivery
+  safety); an id old enough to have been evicted from that history
+  re-executes if redelivered.
 - `exp_ts` — the device MUST discard commands received after this time
   (a broker replaying a stale command must not toggle a charger at 3 AM).
+  If the device's own clock has never been set it cannot judge `exp_ts` at
+  all, and answers `code: "no_clock"` rather than risk running a stale
+  replay.
 - `op` — namespaced verbs. Unknown ops are acked with `ok: false, code:
   "unsupported"`.
+- `code` values a device may answer with on `ok: false`: `bad_args`
+  (missing or malformed arguments), `unsupported` (unknown `op`), `expired`
+  (`exp_ts` already passed), `no_clock` (an `exp_ts` command arrived before
+  the device ever had a clock), `failed` (the op's own action failed on the
+  device).
 
 | `op` | `args` | Effect |
 |---|---|---|
@@ -570,10 +585,12 @@ touching the firmware. This spec's own eleven-key `agent/control.config`
 example above already serialises to 257 bytes, so a full echo-back does not
 fit through that ceiling — send only the keys you mean to change.
 
-Device answers on `agent/ack`, **one per command received** — except a whole
-command payload too large for the device to parse at all, which is dropped
-silently: there is no `id` yet to acknowledge with, so a sender MUST NOT
-assume a missing ack means the command failed cleanly.
+Device answers on `agent/ack`, **one per command received** — except three
+cases where nothing at all goes out, because there is no `id` to
+acknowledge with: a payload too large for the device to parse, a payload
+that is not valid JSON at any size, and a well-formed payload missing `id`.
+All three are dropped silently, so a sender MUST NOT assume a missing ack
+means the command failed cleanly.
 
 ```json
 { "v": 1, "id": "01J8QZ3M9PXW", "ok": true, "ts": 1787700061,
