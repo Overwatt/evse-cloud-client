@@ -351,17 +351,26 @@ fall back to `GET /status` polling after 15 s without a socket.
 
 ## Transport
 
-- The agent shares the charger's single MQTT(S) connection — it is a
-  publisher/subscriber layer, never a second socket.
-- All topics live under the charger's base topic `t/<tenant>/<thing>`:
+- A charger's cloud connection is the agent's **own** MQTT(S) client speaking
+  this contract and nothing else: no legacy per-key topics, no announce topic,
+  no RAPI. (Before 0.5.0 this section said the agent shared the charger's single
+  connection. A charger may still run a second, separate client against a local
+  broker in the legacy format; the two never mix, and only this one reaches the
+  cloud.)
+- All topics live under the **device root** `d/<thing>/`, where `<thing>` is the
+  charger's thing name. No tenant appears on the wire: the server resolves thing
+  → tenant on ingest, so moving a charger between households never touches the
+  device.
 
 | Topic (suffix) | Direction | QoS | Retained |
 |---|---|---|---|
 | `agent/status` | device → cloud | 1 | yes |
+| `agent/control` | device → cloud | 1 | yes |
 | `agent/presence` | device → cloud (+ LWT) | 1 | yes |
 | `agent/session` | device → cloud | 1 | no |
 | `agent/cmd` | cloud → device | 1 | no |
 | `agent/ack` | device → cloud | 1 | no |
+| `lease/set` | cloud → device | 1 | no |
 
 - All payloads are JSON objects carrying `"v": 1`. Receivers MUST ignore
   unknown fields (additive evolution); a breaking change bumps `v`, and a
@@ -369,10 +378,13 @@ fall back to `GET /status` polling after 15 s without a socket.
 
 ## agent/status — the consolidated state document
 
-Published retained: on connect, every `interval_s` (default 30), and
-immediately (debounced ~1 s) when `state` or `vehicle` changes. Retention
-means the broker itself holds the last state — servers need no baseline
-seeding and a reconnecting server reads current truth instantly.
+Published retained on three triggers and no others: on connect, immediately
+(debounced ~1 s) when `state`, `vehicle` or a flag changes, and every
+`interval_s` — the heartbeat, default 60 — whose timer any status publish
+resets. A fourth cadence applies only while a lease is held (see `lease/set`):
+one document every `tick_s`. Retention means the broker itself holds the last
+state — servers need no baseline seeding and a reconnecting server reads current
+truth instantly.
 
 ```json
 {
@@ -403,6 +415,37 @@ seeding and a reconnecting server reads current truth instantly.
 - Everything after `session_wh` is optional. `flags` is an open string set
   (`manual_override`, `divert_active`, `limit_active`, …).
 
+## agent/control — the control mirror
+
+Retained. Published on connect and, debounced ~1 s, whenever the charger's
+manual override, limit, schedule or configuration changes — including an
+`auto_release` that clears an override on the charger's own initiative.
+
+It is **complete, never a patch**: all four keys are present in every document,
+so a consumer replaces its whole control mirror from one message. `null` means
+none set; an empty `schedule` array means no events; keys inside `config` are
+present only when the charger knows them.
+
+```json
+{
+  "v": 1, "ts": 1787700030,
+  "override": { "state": "active", "charge_current": 24, "auto_release": true },
+  "limit": { "type": "energy", "value": 10000, "auto_release": true },
+  "schedule": [ { "id": 1, "state": "active", "time": "23:30:00", "days": ["monday", "friday"] } ],
+  "config": { "max_current_soft": 32, "min_current_hard": 6, "max_current_hard": 48,
+    "divert_enabled": false, "charge_mode": "fast", "current_shaper_enabled": false,
+    "version": "5.1.2", "firmware": "8.2.0", "hostname": "garage",
+    "time_zone": "America/Vancouver", "pause_uses_disabled": true }
+}
+```
+
+- `override.state` — `active`, `disabled`, or the whole object `null`.
+- `limit.type` — `energy` (Wh), `time` (s), `soc` (%) or `range` (km).
+- `schedule[].days` — lower-case day names, Sunday first.
+- One retained document replaces the ~40 retained per-key topics a legacy
+  charger publishes, which is most of why an agent-equipped charger costs two
+  orders of magnitude fewer messages a day.
+
 ## agent/presence — birth and last will
 
 Retained. Published on connect; the connection's LWT is the same topic with
@@ -424,18 +467,43 @@ survive server downtime and carry exact boundaries.
 
 ```json
 { "v": 1, "start_ts": 1787695000, "end_ts": 1787702200,
-  "wh": 8500, "reason": "vehicle" }
+  "wh": 8500, "reason": "vehicle", "unplugged": false }
 ```
 
 `reason`: `vehicle` (EV stopped), `unplugged`, `fault`, `sleep`, `command`.
-Servers SHOULD dedupe on `start_ts`.
+`unplugged` (added in 0.5.0) is true when the vehicle was disconnected at the
+moment the run ended; it is independent of `reason`, since a command may stop a
+run whose car had already gone. Servers SHOULD dedupe on `start_ts`, and where
+the device said `unplugged` they SHOULD prefer it to any unplug debounce of
+their own.
+
+## lease/set — the cloud raises the status cadence
+
+Not retained. The cloud publishes a lease while somebody is watching a charger
+— a phone with a live subscription, or a Live Activity on a lock screen — and
+renews it while under 60 s remain.
+
+```json
+{ "v": 1, "until": 1787700150, "tick_s": 3 }
+```
+
+- `until` — epoch seconds; `tick_s` — the status cadence while it is valid
+  (3 for a phone watching, 15 for a Live Activity alone).
+- The device **never renews, never acknowledges and never publishes anything
+  about a lease.** When `until` passes unrenewed it falls back to the
+  `interval_s` heartbeat. A lease arriving while one runs replaces it, `tick_s`
+  included.
+- A device MUST cap any lease at **120 s of its own monotonic time**, measured
+  from receipt: a cold-booted charger may have no clock at all, in which case
+  `until` is unusable and that cap is the whole lease. A lease whose `until` has
+  already passed by the device's own clock ends any lease running.
 
 ## agent/cmd and agent/ack — acknowledged commands
 
-Reserved. `POST /command` publishes to the charger's legacy command topics
-(`override/set`, `limit/set`, `schedule/set`, `schedule/clear`,
-`divertmode/set`, `config/set`, `restart` under the base topic), never to
-`agent/cmd`.
+On an agent connection every remote command travels here; the legacy command
+topics (`override/set`, `limit/set`, `schedule/set`, `schedule/clear`,
+`divertmode/set`, `config/set`, `restart` under a legacy base topic) remain the
+path for chargers without an agent.
 
 Cloud publishes to `agent/cmd`:
 
@@ -449,9 +517,25 @@ Cloud publishes to `agent/cmd`:
   duplicates without re-executing (QoS 1 redelivery safety).
 - `exp_ts` — the device MUST discard commands received after this time
   (a broker replaying a stale command must not toggle a charger at 3 AM).
-- `op` — namespaced verbs. Initial set: `override.set`, `override.clear`,
-  `config.get`, `ping`. Extensible; unknown ops are acked with `ok: false,
-  code: "unsupported"`.
+- `op` — namespaced verbs. Unknown ops are acked with `ok: false, code:
+  "unsupported"`.
+
+| `op` | `args` | Effect |
+|---|---|---|
+| `override.set` | `{state: "active"\|"disabled", charge_current?}` | Force the EVSE on or off, optionally at a given current |
+| `override.clear` | – | Drop the manual override |
+| `limit.set` | `{type: "energy"\|"time"\|"soc"\|"range", value, auto_release?}` | Stop the run after this much; `auto_release` defaults to true |
+| `limit.clear` | – | Drop the limit |
+| `schedule.set` | `{id, state, time: "HH:MM:SS", days: [...]}` | Add or replace one weekly event |
+| `schedule.clear` | `{id}` | Remove one weekly event |
+| `divert.set` | `{mode: 1\|2}` | Solar divert mode |
+| `config.set` | a config object, e.g. `{max_current_soft: 32}` | Write configuration keys |
+| `restart` | – | Reboot the charger (acked first) |
+| `ping` | – | Liveness check |
+
+An accepted command that moves control state is followed by a fresh
+`agent/control` document, so a consumer never has to guess whether a command
+landed.
 
 Device answers on `agent/ack`:
 
