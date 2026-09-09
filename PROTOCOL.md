@@ -361,10 +361,20 @@ fall back to `GET /status` polling after 15 s without a socket.
   charger's thing name. No tenant appears on the wire: the server resolves thing
   → tenant on ingest, so moving a charger between households never touches the
   device.
+- The **topic per publish** is the host's choice, not the core's — the device
+  agent always publishes by suffix. `agent/control` and `agent/presence` always
+  go out on the ordinary retained topic, `d/<thing>/agent/<suffix>`.
+  `agent/status` publishes its connect-time document there too, retained; every
+  later status, and every `agent/session` document, instead goes out through
+  **Basic Ingest** — `$aws/rules/agent_status/d/<thing>/agent/status` or
+  `$aws/rules/agent_session/d/<thing>/agent/session` — which never reaches the
+  broker: no retention, no MQTT subscriber, rule charge only (see
+  `agent/status` and `agent/session` below). `agent/cmd`, `agent/ack` and
+  `lease/set` are unaffected by the split.
 
 | Topic (suffix) | Direction | QoS | Retained |
 |---|---|---|---|
-| `agent/status` | device → cloud | 1 | yes |
+| `agent/status` | device → cloud | 1 | connect only (see above) |
 | `agent/control` | device → cloud | 1 | yes |
 | `agent/presence` | device → cloud (+ LWT) | 1 | yes |
 | `agent/session` | device → cloud | 1 | no |
@@ -378,13 +388,19 @@ fall back to `GET /status` polling after 15 s without a socket.
 
 ## agent/status — the consolidated state document
 
-Published retained on three triggers and no others: on connect, immediately
-(debounced ~1 s) when `state`, `vehicle` or a flag changes, and every
-`interval_s` — the heartbeat, default 60 — whose timer any status publish
-resets. A fourth cadence applies only while a lease is held (see `lease/set`):
-one document every `tick_s`. Retention means the broker itself holds the last
-state — servers need no baseline seeding and a reconnecting server reads current
-truth instantly.
+Published on three triggers and no others: on connect; immediately (debounced
+~1 s) when `state`, `vehicle` or a flag changes; and every `interval_s` — the
+heartbeat, default 60, whose timer any status publish resets — or, while a
+lease is held (see `lease/set`), every `tick_s` instead.
+
+Only the connect-time publish is retained, on the ordinary topic
+`d/<thing>/agent/status` (see Transport): the broker holds that one as a
+last-known snapshot, so a reconnecting server needs no baseline seeding. Every
+later publish — event, heartbeat or leased tick — goes out through **Basic
+Ingest** instead, `$aws/rules/agent_status/d/<thing>/agent/status`, which never
+reaches the broker: not retained, no MQTT subscriber, rule charge only. A
+server that wants live status subscribes to the ingest side effect (the row
+`agent-ingest.ts` writes), not the MQTT topic.
 
 ```json
 {
@@ -413,7 +429,8 @@ truth instantly.
 - `session_start_ts` — present while charging; lets any consumer render
   elapsed time without reconstructing it from transitions.
 - Everything after `session_wh` is optional. `flags` is an open string set
-  (`manual_override`, `divert_active`, `limit_active`, …).
+  (`manual_override`, `divert_active`, `limit_active`, `local_mqtt_disabled`
+  — the chip's heap rule stopped the charger's local publisher — …).
 
 ## agent/control — the control mirror
 
@@ -445,6 +462,8 @@ present only when the charger knows them.
 - One retained document replaces the ~40 retained per-key topics a legacy
   charger publishes, which is most of why an agent-equipped charger costs two
   orders of magnitude fewer messages a day.
+- Always the ordinary retained topic, `d/<thing>/agent/control` — never Basic
+  Ingest (see Transport).
 
 ## agent/presence — birth and last will
 
@@ -455,15 +474,20 @@ IoT, MAY use those instead and treat this topic as corroboration).
 
 ```json
 { "v": 1, "online": true,  "ts": 1787700000,
-  "fw": "5.1.2", "agent": "0.1.0", "proto": 1, "ip": "10.75.1.157" }
+  "fw": "5.1.2", "agent": "0.2.0", "proto": 1, "ip": "10.75.1.157" }
 { "v": 1, "online": false }
 ```
+
+Always the ordinary retained topic, `d/<thing>/agent/presence` — never Basic
+Ingest (see Transport).
 
 ## agent/session — completed charging runs
 
 Published (not retained) once per run, when the charger leaves the charging
-state. Device-side session records beat server-reconstructed ones: they
-survive server downtime and carry exact boundaries.
+state, through Basic Ingest — `$aws/rules/agent_session/d/<thing>/agent/session`
+(see Transport), which never reaches the broker. Device-side session records
+beat server-reconstructed ones: they survive server downtime and carry exact
+boundaries.
 
 ```json
 { "v": 1, "start_ts": 1787695000, "end_ts": 1787702200,
@@ -488,7 +512,9 @@ renews it while under 60 s remain.
 ```
 
 - `until` — epoch seconds; `tick_s` — the status cadence while it is valid
-  (3 for a phone watching, 15 for a Live Activity alone).
+  (3 for a phone watching, 15 for a Live Activity alone). `tick_s` MUST be
+  1..60; a device ignores a lease outside that range outright — the document
+  is dropped and any lease already running is left untouched.
 - The device **never renews, never acknowledges and never publishes anything
   about a lease.** When `until` passes unrenewed it falls back to the
   `interval_s` heartbeat. A lease arriving while one runs replaces it, `tick_s`
@@ -537,7 +563,17 @@ An accepted command that moves control state is followed by a fresh
 `agent/control` document, so a consumer never has to guess whether a command
 landed.
 
-Device answers on `agent/ack`:
+`config.set`'s `args` face a device-side size ceiling: the reference
+implementation re-serialises them into a 256-byte buffer (254 usable) before
+writing configuration, and acks `bad_args` for anything larger without
+touching the firmware. This spec's own eleven-key `agent/control.config`
+example above already serialises to 257 bytes, so a full echo-back does not
+fit through that ceiling — send only the keys you mean to change.
+
+Device answers on `agent/ack`, **one per command received** — except a whole
+command payload too large for the device to parse at all, which is dropped
+silently: there is no `id` yet to acknowledge with, so a sender MUST NOT
+assume a missing ack means the command failed cleanly.
 
 ```json
 { "v": 1, "id": "01J8QZ3M9PXW", "ok": true, "ts": 1787700061,
