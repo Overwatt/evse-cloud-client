@@ -651,25 +651,46 @@ export interface ClaimedCharger {
    *  to the charger; do not persist it. */
   privateKey: string;
   rootCa: string;
-  /** The payload to POST to the charger's own `/config`. */
+  /** The payload to POST to the charger's own `/config`. Stock MQTT settings
+   *  on a legacy claim; `cloud_*` plus `mqtt_client_id` on a cloud-client
+   *  claim (see PROTOCOL.md, POST /claim). */
   config: Record<string, string | number | boolean>;
+}
+
+export interface ClaimOptions {
+  serial?: string;
+  label?: string;
+  tenantId?: string;
+  /** The charger runs the evse-cloud-agent component. The server then keys
+   *  it on `evse-<wifi mac>` rather than the hostname, and `wifiSerial` is
+   *  required. */
+  cloudClient?: boolean;
+  /** The firmware's `GET /config` `wifi_serial`. Sent only with
+   *  `cloudClient`; separators are fine, the server canonicalises. */
+  wifiSerial?: string;
 }
 
 /**
  * Claim a charger for the signed-in user's household.
  *
- * The name is the charger's hostname, which is also its MQTT client id. The
- * response carries credentials the app uploads to the charger over the LAN.
+ * `name` is the charger's hostname. On a legacy claim it is also the key and
+ * the MQTT client id; on a cloud-client claim the server derives the key from
+ * `wifiSerial` and `name` is only the default label — read the key back from
+ * the response's `name`. The response carries credentials the app uploads to
+ * the charger over the LAN.
  */
 export async function claimCharger(
   name: string,
-  opts: { serial?: string; label?: string; tenantId?: string } = {},
+  opts: ClaimOptions = {},
 ): Promise<ClaimedCharger> {
   return request<ClaimedCharger>('POST', '/claim', {
     name,
     ...(opts.serial ? { serial: opts.serial } : {}),
     ...(opts.label ? { label: opts.label } : {}),
     ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
+    ...(opts.cloudClient
+      ? { cloudClient: true, ...(opts.wifiSerial ? { wifi_serial: opts.wifiSerial } : {}) }
+      : {}),
   });
 }
 

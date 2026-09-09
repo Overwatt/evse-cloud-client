@@ -215,6 +215,33 @@ describe('claiming a charger', () => {
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ name: 'openevse-2760' });
   });
 
+  it('sends cloudClient and the wire-named wifi_serial for an agent charger', async () => {
+    const cloud = { ...claimed, name: 'evse-0123456789ab', config: { cloud_enabled: true } };
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, cloud));
+    });
+    const out = await claimCharger('openevse-27cc', {
+      cloudClient: true,
+      wifiSerial: '01:23:45:67:89:AB',
+    });
+    expect(out.name).toBe('evse-0123456789ab');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      name: 'openevse-27cc',
+      cloudClient: true,
+      wifi_serial: '01:23:45:67:89:AB',
+    });
+  });
+
+  it('never sends wifi_serial on a legacy claim', async () => {
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Promise.resolve(respond(200, claimed));
+    });
+    await claimCharger('openevse-2760', { wifiSerial: '0123456789ab' });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ name: 'openevse-2760' });
+  });
+
   it('throws the server refusal, status and all', async () => {
     vi.stubGlobal('fetch', () => Promise.resolve(respond(409, { error: 'claimed elsewhere' })));
     await expect(claimCharger('openevse-2760')).rejects.toMatchObject({

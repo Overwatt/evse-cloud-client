@@ -55,6 +55,9 @@ issued a certificate or did not, and the app has to say which.
 ```ts
 // On the charger's Wi-Fi: claim it, then hand it its credentials over the LAN.
 const c = await claimCharger('openevse-2760', { serial, label: 'Garage' });
+// A charger running the cloud agent is keyed on its WiFi MAC, not its hostname:
+const a = await claimCharger('openevse-27cc', { cloudClient: true, wifiSerial: cfg.wifi_serial });
+a.name; // 'evse-<mac>' — use this name with every other call
 // c.certificatePem, c.privateKey (returned exactly once — never stored),
 // c.rootCa, and c.config: the payload for the charger's own /config.
 

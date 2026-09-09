@@ -193,11 +193,26 @@ registration-token caller.
 
 ```json
 { "name": "openevse-2760", "serial": "optional", "label": "Garage",
-  "tenantId": "optional — another household the caller administers" }
+  "tenantId": "optional — another household the caller administers",
+  "cloudClient": false, "wifi_serial": "required when cloudClient is true" }
 ```
 
-`name` is the charger's hostname, which is also its MQTT client id
-(`^[a-z0-9][a-z0-9-]{0,39}$`). Response:
+`name` is the charger's hostname (`^[a-z0-9][a-z0-9-]{0,39}$`), read from
+the charger over the LAN. What it means depends on `cloudClient`:
+
+- **Legacy claim** (`cloudClient` absent or false): `name` is the charger's
+  key and its MQTT client id. `wifi_serial` is ignored.
+- **Cloud-client claim** (`cloudClient: true`, added in 0.5.0): the charger
+  runs the evse-cloud-agent component, and its key is `evse-<wifi mac>` —
+  twelve lowercase hex digits, derived by the server from `wifi_serial`
+  (the firmware's `GET /config` field of that name; `:` and `-` separators
+  are tolerated). `name` is only the default `label` when none is given,
+  because the hostname is freely renameable from here on. The key is the
+  IoT thing name, the MQTT client id and the second segment of the device
+  topic root (§ Transport). A WiFi-board swap is a different charger.
+  Missing or malformed: `400 {"error":"bad wifi_serial"}`.
+
+Response:
 
 ```json
 { "name": "openevse-2760", "tenant": "01j...",
@@ -207,7 +222,25 @@ registration-token caller.
 
 The private key is returned exactly once and is never retrievable again; the
 client hands it to the charger over the LAN and does not store it. `config` is
-the payload for the charger's own `/config` endpoint.
+the payload for the charger's own `/config` endpoint. `name` in the response
+is the key the server chose — on a cloud-client claim that is `evse-<mac>`,
+not the hostname sent — and it is the name every other endpoint takes from
+then on.
+
+The shape of `config` follows the claim kind. A legacy claim writes the
+charger's stock MQTT settings (`mqtt_server`, `mqtt_port`, `mqtt_protocol`,
+`mqtt_topic`, `hostname`, and the four blanked emon topics). A cloud-client
+claim writes only the cloud connection and leaves the local `mqtt_*`
+settings as the owner set them:
+
+```json
+{ "cloud_enabled": true, "cloud_server": "...", "cloud_port": 8883,
+  "cloud_thing": "evse-0123456789ab", "cloud_certificate_id": "...",
+  "mqtt_client_id": "evse-0123456789ab" }
+```
+
+`cloud_enabled` is a JSON boolean. `mqtt_client_id` MUST equal `cloud_thing`:
+the device policy pins the connection to the thing name.
 
 A name already held by another household may be claimed only while it is
 offline there — `409 {"error":"claimed elsewhere"}` otherwise; that household
@@ -602,7 +635,8 @@ means the command failed cleanly.
 
 Out of scope for the MQTT wire format — chargers are provisioned over the
 LAN (the claim flow: an authenticated phone obtains credentials from the
-server and hands them to the charger via its local HTTP API). A future
+server with `POST /claim` `cloudClient: true` and hands them to the charger
+via its local HTTP API). A future
 revision specifies the agent's local endpoint for accepting
 `{endpoint, cert, key|csr, tenant, thing}` as one transaction, and
 device-generated CSRs so private keys never leave the charger.
@@ -612,7 +646,10 @@ device-generated CSRs so private keys never leave the charger.
 Servers implementing this protocol SHOULD also ingest unmodified OpenEVSE
 firmware: retained per-key publishes (`<base>/state`, `<base>/vehicle`,
 `<base>/session_energy`, …) and the firmware's hardcoded
-`openevse/announce/<id>` topic for presence. A device is agent-equipped iff
-it has published `agent/presence`; servers prefer the agent surface and MAY
-ignore the per-key topics from such devices to avoid double-processing.
+`openevse/announce/<id>` topic for presence. Which surface a charger speaks
+is decided at claim time (`POST /claim` `cloudClient`), never inferred from
+traffic: a legacy charger keeps its tenant-rooted per-key topics, and a
+cloud-client charger speaks only the device root above. Servers MAY still
+flag a legacy charger that has published an agent document, but MUST NOT
+route it as a cloud client on that evidence alone.
 
